@@ -1,0 +1,25 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+out/
+publish/
+
+# Distributables / publish staging
+[Dd]ist/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.pdb
+
+# Launcher build artifacts (icon is copied from Assets at build time)
+tools/launcher/*.obj
+tools/launcher/*.res
+tools/launcher/*.exe
+tools/launcher/app.ico
+tools/dotnet-launcher/app.ico
+
+# OS cruft
+Thumbs.db
+desktop.ini

@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "HDRSnap2 (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "HDRSnap2 (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}
