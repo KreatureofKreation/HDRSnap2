@@ -49,78 +49,136 @@ namespace HDRSnap2
                 using var output5 = output.QueryInterface<Output5>();
                 var formats = new[] { Format.R16G16B16A16_Float, Format.B8G8R8A8_UNorm };
                 _duplication = output5.DuplicateOutput1(_device, 0, formats.Length, formats);
-                System.Diagnostics.Debug.WriteLine("Using DuplicateOutput1 (HDR FP16)");
+                Log.Line("Using DuplicateOutput1 (HDR FP16)");
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("DuplicateOutput1 failed, falling back to SDR: " + ex.Message);
+                Log.Line("DuplicateOutput1 failed, falling back to SDR: " + ex.Message);
                 _duplication = _output.DuplicateOutput(_device);
             }
 
             output.Dispose();
 
             _sdrWhiteScale = HdrDisplay.GetSdrWhiteScale();
-            System.Diagnostics.Debug.WriteLine($"SDR white scale: {_sdrWhiteScale}");
+            Log.Line($"SDR white scale: {_sdrWhiteScale}");
         }
 
         public async Task<byte[]?> CaptureRegionAsync(Windows.Foundation.Rect region)
         {
             return await Task.Run(() =>
             {
-                try
+                Log.Line("--- capture ---");
+
+                // Refresh the SDR white level each capture so the tone-map stays correct
+                // if HDR / SDR-content brightness changed while the app was running.
+                _sdrWhiteScale = HdrDisplay.GetSdrWhiteScale();
+
+                // The duplication dies with DXGI_ERROR_ACCESS_LOST whenever the display
+                // changes mode (alt-tabbing fullscreen games, toggling HDR, resolution
+                // changes). Re-create it and retry instead of permanently dropping to the
+                // washed-out GDI fallback — which is what made captures regress until restart.
+                bool fresh = false;   // true right after (re)creating the duplication
+                for (int attempt = 0; attempt < 8; attempt++)
                 {
-                    var result = _duplication!.TryAcquireNextFrame(500,
-                        out var frameInfo, out var desktopResource);
-
-                    if (result.Failure || desktopResource == null)
-                        return CaptureViaGdi(region);
-
-                    using (desktopResource)
-                    using (var texture = desktopResource.QueryInterface<SharpDX.Direct3D11.Texture2D>())
+                    try
                     {
-                        var texDesc = texture.Description;
-                        texDesc.CpuAccessFlags = CpuAccessFlags.Read;
-                        texDesc.Usage = ResourceUsage.Staging;
-                        texDesc.OptionFlags = ResourceOptionFlags.None;
-                        texDesc.BindFlags = BindFlags.None;
+                        var result = _duplication!.TryAcquireNextFrame(500,
+                            out var frameInfo, out var desktopResource);
 
-                        using var stagingTexture = new SharpDX.Direct3D11.Texture2D(_device!, texDesc);
-                        _device!.ImmediateContext.CopyResource(texture, stagingTexture);
-                        _duplication.ReleaseFrame();
+                        // No new frame within the timeout — surface still valid, just retry.
+                        if (result.Code == SharpDX.DXGI.ResultCode.WaitTimeout.Result.Code)
+                            continue;
 
-                        var dataBox = _device.ImmediateContext.MapSubresource(
-                            stagingTexture, 0, MapMode.Read, SharpDX.Direct3D11.MapFlags.None);
-
-                        int rx = Math.Max(0, (int)(region.X - _offsetX));
-                        int ry = Math.Max(0, (int)(region.Y - _offsetY));
-                        int rw = Math.Min((int)region.Width, _width - rx);
-                        int rh = Math.Min((int)region.Height, _height - ry);
-
-                        if (rw <= 0 || rh <= 0)
+                        if (result.Failure || desktopResource == null)
                         {
-                            _device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
-                            return null;
+                            Log.Line($"AcquireNextFrame failed: code={result.Code}, attempt={attempt}");
+                            Reinitialize();
+                            fresh = true;
+                            continue;
                         }
 
-                        int srcStride = dataBox.RowPitch;
-                        var fmt = texDesc.Format;
-                        System.Diagnostics.Debug.WriteLine($"Capture format: {fmt}, RowPitch: {srcStride}");
+                        // A freshly (re)created duplication hands back an empty/black frame
+                        // until the compositor presents into it. Skip empty frames until a
+                        // real one arrives, else the capture comes out black.
+                        if (fresh && frameInfo.LastPresentTime == 0)
+                        {
+                            desktopResource.Dispose();
+                            _duplication.ReleaseFrame();
+                            continue;
+                        }
+                        fresh = false;
 
-                        byte[] pixels = ToBgra8(dataBox.DataPointer, srcStride, rx, ry, rw, rh, fmt, _sdrWhiteScale);
+                        using (desktopResource)
+                        using (var texture = desktopResource.QueryInterface<SharpDX.Direct3D11.Texture2D>())
+                        {
+                            var texDesc = texture.Description;
+                            texDesc.CpuAccessFlags = CpuAccessFlags.Read;
+                            texDesc.Usage = ResourceUsage.Staging;
+                            texDesc.OptionFlags = ResourceOptionFlags.None;
+                            texDesc.BindFlags = BindFlags.None;
 
-                        _device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
+                            using var stagingTexture = new SharpDX.Direct3D11.Texture2D(_device!, texDesc);
+                            _device!.ImmediateContext.CopyResource(texture, stagingTexture);
+                            _duplication.ReleaseFrame();
 
-                        _lastWidth = rw;
-                        _lastHeight = rh;
-                        return pixels;
+                            var dataBox = _device.ImmediateContext.MapSubresource(
+                                stagingTexture, 0, MapMode.Read, SharpDX.Direct3D11.MapFlags.None);
+
+                            int rx = Math.Max(0, (int)(region.X - _offsetX));
+                            int ry = Math.Max(0, (int)(region.Y - _offsetY));
+                            int rw = Math.Min((int)region.Width, _width - rx);
+                            int rh = Math.Min((int)region.Height, _height - ry);
+
+                            if (rw <= 0 || rh <= 0)
+                            {
+                                _device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
+                                return null;
+                            }
+
+                            int srcStride = dataBox.RowPitch;
+                            var fmt = texDesc.Format;
+                            Log.Line($"Capture format: {fmt}, RowPitch: {srcStride}, SDR scale: {_sdrWhiteScale}, present={frameInfo.LastPresentTime}");
+
+                            byte[] pixels = ToBgra8(dataBox.DataPointer, srcStride, rx, ry, rw, rh, fmt, _sdrWhiteScale);
+
+                            _device.ImmediateContext.UnmapSubresource(stagingTexture, 0);
+
+                            _lastWidth = rw;
+                            _lastHeight = rh;
+                            return pixels;
+                        }
+                    }
+                    catch (SharpDX.SharpDXException ex)
+                    {
+                        // Device/duplication lost — rebuild and retry.
+                        Log.Line("DXGI lost, reinitializing: " + ex.Message);
+                        Reinitialize();
+                        fresh = true;
+                        continue;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Line("DXGI error: " + ex.Message);
+                        return CaptureViaGdi(region);
                     }
                 }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine("DXGI error: " + ex.Message);
-                    return CaptureViaGdi(region);
-                }
+                Log.Line("exhausted acquire attempts -> GDI fallback");
+                return CaptureViaGdi(region);
             });
+        }
+
+        // Rebuild the D3D device + output duplication after the display changes mode
+        // (DXGI_ERROR_ACCESS_LOST). Also refreshes geometry and the SDR white level.
+        private void Reinitialize()
+        {
+            try { _duplication?.Dispose(); } catch { }
+            try { _output?.Dispose(); } catch { }
+            try { _device?.Dispose(); } catch { }
+            _duplication = null;
+            _output = null;
+            _device = null;
+            try { Initialize(); }
+            catch (Exception ex) { Log.Line("Reinit failed: " + ex.Message); }
         }
 
         public int _lastWidth;
@@ -132,6 +190,7 @@ namespace HDRSnap2
 
         private byte[]? CaptureViaGdi(Windows.Foundation.Rect region)
         {
+            Log.Line("!! Using GDI fallback (SDR — this is the washed path on HDR)");
             try
             {
                 int x = (int)region.X;
@@ -160,7 +219,7 @@ namespace HDRSnap2
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine("GDI error: " + ex.Message);
+                Log.Line("GDI error: " + ex.Message);
                 return null;
             }
         }
