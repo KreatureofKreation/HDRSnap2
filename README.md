@@ -1,16 +1,18 @@
 # HDRSnap2
 
-**HDR-accurate screenshots for Windows.**
+**Screenshots that don't wash out when Windows HDR is on.**
 
-Most screenshot tools capture a washed-out, faded image when your display is in HDR mode. HDRSnap2 grabs the *real* HDR pixels and tone-maps them correctly, so the saved image looks like what you actually see — on HDR **and** SDR displays.
+With HDR enabled, screenshots of everyday content — browsers, chats, documents, desktop apps — come out washed-out, milky, and over-bright. Even the Windows Snipping Tool gets this wrong: SDR content sitting in the HDR framebuffer isn't mapped back to SDR correctly. HDRSnap2 reads your display's actual SDR white level and tone-maps properly, so captures look exactly like your screen.
 
-A lightweight tray app: press a hotkey, drag a box, done. Saves a PNG and copies it to the clipboard.
+A lightweight tray app: hotkey → drag a box → done. Saves a PNG to `Pictures\HDRSnap` and copies it to the clipboard.
+
+> ℹ️ **Where it matters:** the everyday **SDR-on-HDR** case — browsing, chatting, working — is what washes out. For *full-HDR game* content, modern Windows tools already capture correctly, and HDRSnap2 simply matches them there. The win is everything else.
 
 ---
 
 ## Features
 
-- 🎨 **HDR-accurate** — captures the FP16 scRGB framebuffer and tone-maps scRGB → sRGB, normalized by the real SDR white level. No more milky, washed-out HDR screenshots.
+- 🎨 **No more washed-out HDR shots** — captures the FP16 scRGB framebuffer and tone-maps scRGB → sRGB, normalized by your display's real SDR white level. Fixes the milky, over-bright look that SDR content (browsers, apps, chat) gets when HDR is on.
 - ⚡ **Hotkey capture** — `Ctrl+Alt+Q` by default, freezes the screen, drag-to-select (WYSIWYG — what you freeze is what you save).
 - 🖱️ **System tray** — capture, open folder, change hotkey, start-with-Windows toggle, exit.
 - ⌨️ **Custom hotkey** — pick your own combo in Settings; remembered between runs.
